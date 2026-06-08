@@ -33,7 +33,17 @@ LABEL_BINARY = {"real": 0, "veo31": 1, "omniflash": 1, "ltx23": 1}
 LABEL_4CLASS = {"real": "real", "veo31": "veo31", "omniflash": "omniflash", "ltx23": "ltx23"}
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
 
-NAME_RE = re.compile(r"^(?P<source>real|veo31|omniflash|ltx23)_p(?P<pid>\d{2})_(?P<take>\d+)$")
+# Accept short aliases in filenames/dirs and fold them to the canonical source.
+ALIASES = {"veo": "veo31", "ltx": "ltx23"}
+# canonical source -> directory names to scan (canonical first, then aliases)
+DIR_CANDIDATES = {c: [c] for c in SOURCES}
+for _alias, _canon in ALIASES.items():
+    DIR_CANDIDATES[_canon].append(_alias)
+
+# longer alternatives first so e.g. "veo31" wins over "veo"
+NAME_RE = re.compile(
+    r"^(?P<source>real|veo31|veo|omniflash|ltx23|ltx)_p(?P<pid>\d{2})_(?P<take>\d+)$"
+)
 
 COLUMNS = [
     "filename", "source", "label_binary", "label_4class", "prompt_id", "take",
@@ -91,31 +101,33 @@ def main():
 
     rows, skipped = [], []
     for src in SOURCES:
-        d = raw_dir / src
-        if not d.is_dir():
-            continue
-        for f in sorted(d.iterdir()):
-            if f.suffix.lower() not in VIDEO_EXTS:
+        for dname in DIR_CANDIDATES[src]:
+            d = raw_dir / dname
+            if not d.is_dir():
                 continue
-            m = NAME_RE.match(f.stem)
-            if not m:
-                skipped.append(f.name)
-                continue
-            if m.group("source") != src:
-                skipped.append(f"{f.name} (in raw/{src}/ but named {m.group('source')})")
-                continue
-            resolution, fps, dur = probe(f)
-            rows.append({
-                "filename": f.stem + ".mp4",          # normalized output name
-                "source": src,
-                "label_binary": LABEL_BINARY[src],
-                "label_4class": LABEL_4CLASS[src],
-                "prompt_id": "p" + m.group("pid"),
-                "take": m.group("take"),
-                "orig_url": "", "license": "",
-                "orig_resolution": resolution, "orig_fps": fps, "orig_duration_s": dur,
-                "gen_model_version": "", "gen_seed": "", "gen_date": "", "notes": "",
-            })
+            for f in sorted(d.iterdir()):
+                if f.suffix.lower() not in VIDEO_EXTS:
+                    continue
+                m = NAME_RE.match(f.stem)
+                if not m:
+                    skipped.append(f.name)
+                    continue
+                canon = ALIASES.get(m.group("source"), m.group("source"))
+                if canon != src:
+                    skipped.append(f"{f.name} (in raw/{dname}/ but named {m.group('source')})")
+                    continue
+                resolution, fps, dur = probe(f)
+                rows.append({
+                    "filename": f.stem + ".mp4",          # normalized output name (basename preserved)
+                    "source": src,                         # canonical, even if file said veo/ltx
+                    "label_binary": LABEL_BINARY[src],
+                    "label_4class": LABEL_4CLASS[src],
+                    "prompt_id": "p" + m.group("pid"),
+                    "take": m.group("take"),
+                    "orig_url": "", "license": "",
+                    "orig_resolution": resolution, "orig_fps": fps, "orig_duration_s": dur,
+                    "gen_model_version": "", "gen_seed": "", "gen_date": "", "notes": "",
+                })
 
     rows.sort(key=lambda r: (r["prompt_id"], r["source"], r["take"]))
 
@@ -129,7 +141,7 @@ def main():
     by_src = {s: sum(1 for r in rows if r["source"] == s) for s in SOURCES}
     print("  per source:", "  ".join(f"{s}={by_src[s]}" for s in SOURCES))
     n_prompts = len({r["prompt_id"] for r in rows})
-    print(f"  distinct prompts covered: {n_prompts}/30")
+    print(f"  distinct prompts covered: {n_prompts}/25")
     if skipped:
         print(f"  SKIPPED {len(skipped)} misnamed file(s):")
         for s in skipped:
