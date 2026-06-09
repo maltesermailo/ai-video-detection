@@ -193,6 +193,10 @@ def main():
     ap.add_argument("--threshold", type=float, default=0.5, help="decision cutoff for @thr metrics")
     ap.add_argument("--face_prompts", default=DEFAULT_FACE,
                     help="comma-separated prompt_ids forming the face subset")
+    ap.add_argument("--face_only", action="store_true",
+                    help="restrict ALL rows (overall + per-generator + distribution) to the "
+                         "face_prompts. Use when non-face scenes produced false-positive face "
+                         "crops that should not be scored by a face detector.")
     args = ap.parse_args()
 
     # --- Load and sanity-check the CSV -------------------------------------
@@ -218,22 +222,37 @@ def main():
                   + ", ".join(f"{s}={int(n)}" for s, n in by_src.items()))
         df = df[keep]
 
+    # --- Optional: restrict EVERYTHING to face prompts ---------------------
+    # With --face_only we drop all non-face scenarios up front, so the overall
+    # and per-generator rows are computed on faces too (not just the dedicated
+    # face row). This is the fix for non-face scenes yielding garbage face
+    # crops that a face detector should never have scored.
+    face_ids = {p.strip() for p in args.face_prompts.split(",") if p.strip()}
+    if args.face_only:
+        if args.prompt_col not in df.columns:
+            raise SystemExit(f"--face_only needs the prompt column '{args.prompt_col}'")
+        before = len(df)
+        df = df[df[args.prompt_col].isin(face_ids)]
+        print(f"--face_only: kept {len(df)} face-prompt clip(s), dropped {before - len(df)} non-face")
+
     thr = args.threshold
     real = df[df[args.label_col] == 0]                  # all real clips (shared negative class)
     ai = df[df[args.label_col] == 1]                    # all AI clips (combined positive class)
     ss = lambda d: d[args.score_col].values             # tiny helper: pull the score array
 
-    # --- Row 1: overall (all generators pooled) vs real --------------------
-    rows = [metrics(ss(ai), ss(real), "overall_all_AI_vs_real", thr)]
+    # --- Row 1: overall vs real (face-only if --face_only) -----------------
+    overall_name = "overall_face_AI_vs_real" if args.face_only else "overall_all_AI_vs_real"
+    rows = [metrics(ss(ai), ss(real), overall_name, thr)]
 
     # --- One row per generator vs the SAME real set ------------------------
     # Every source that isn't 'real' is treated as its own positive class.
     for gen in sorted(g for g in df[args.source_col].unique() if g != args.real_source):
         rows.append(metrics(ss(df[df[args.source_col] == gen]), ss(real), f"{gen}_vs_real", thr))
 
-    # --- Face-subset row: same AI-vs-real, restricted to face prompts ------
-    if args.prompt_col in df.columns:
-        face_ids = {p.strip() for p in args.face_prompts.split(",") if p.strip()}
+    # --- Dedicated face-subset row ----------------------------------------
+    # Only add this when NOT in face_only mode (in face_only mode the overall
+    # row already IS the face subset, so a separate row would be a duplicate).
+    if not args.face_only and args.prompt_col in df.columns:
         face = df[df[args.prompt_col].isin(face_ids)]   # keep only face-forward scenarios
         rows.append(metrics(ss(face[face[args.label_col] == 1]),   # face AI clips
                             ss(face[face[args.label_col] == 0]),    # face real clips
