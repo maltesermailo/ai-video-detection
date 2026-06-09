@@ -186,6 +186,9 @@ def main():
     ap.add_argument("--source_col", default="source", help="generator name / 'real'")
     ap.add_argument("--prompt_col", default="prompt_id", help="used to build the face subset")
     ap.add_argument("--frames_col", default="n_frames", help="optional; for low-frame count")
+    ap.add_argument("--min_frames", type=int, default=4,
+                    help="drop clips scored on fewer than this many frames (noisy); "
+                         "set 0 (or 1) to keep all. Needs frames_col present.")
     ap.add_argument("--real_source", default="real", help="value in source_col meaning 'real'")
     ap.add_argument("--threshold", type=float, default=0.5, help="decision cutoff for @thr metrics")
     ap.add_argument("--face_prompts", default=DEFAULT_FACE,
@@ -200,6 +203,20 @@ def main():
     # Force the score column numeric; blank/garbage becomes NaN, then we drop those rows.
     df[args.score_col] = pd.to_numeric(df[args.score_col], errors="coerce")
     df = df.dropna(subset=[args.score_col])
+
+    # --- Drop low-frame clips ---------------------------------------------
+    # Clips scored on only 1-3 frames give noisy per-clip scores, so by default
+    # we filter out anything with fewer than --min_frames frames before
+    # computing any metric. Guarded: only runs if the frames column exists.
+    if args.frames_col in df.columns and args.min_frames > 1:
+        nf = pd.to_numeric(df[args.frames_col], errors="coerce")
+        keep = nf >= args.min_frames
+        dropped = df[~keep]
+        if len(dropped):
+            by_src = dropped.groupby(args.source_col).size()
+            print(f"dropped {len(dropped)} clip(s) with < {args.min_frames} frames: "
+                  + ", ".join(f"{s}={int(n)}" for s, n in by_src.items()))
+        df = df[keep]
 
     thr = args.threshold
     real = df[df[args.label_col] == 0]                  # all real clips (shared negative class)
